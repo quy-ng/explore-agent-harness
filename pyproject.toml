@@ -1,0 +1,28 @@
+[project]
+name = "langgraph-mini-swe-poc"
+version = "0.1.0"
+description = "Small LangGraph + mini-SWE-agent + LiteLLM proof of concept"
+requires-python = ">=3.11"
+dependencies = [
+  "langgraph>=1.0",
+  "langgraph-cli[inmem]>=0.4",
+  "mini-swe-agent>=2.0",
+  "litellm>=1.70",
+  "python-dotenv>=1.0",
+  "pyyaml>=6.0",
+  "botocore>=1.43.9",
+  "swe-rex>=1.4",
+  "streamlit>=1.57.0",
+  "autogen-ext[openai]>=0.7.5",
+  "autogen-agentchat>=0.7.5",
+]
+
+[project.scripts]
+langgraph-mini-swe = "langgraph_mini_swe_poc.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/langgraph_mini_swe_poc"]

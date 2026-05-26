@@ -1,0 +1,11 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "mini_swe_poc": "./src/langgraph_mini_swe_poc/studio.py:graph",
+    "mini_swe_multi": "./src/langgraph_mini_swe_poc/studio.py:multi_graph",
+    "mini_swe_negotiate": "./src/langgraph_mini_swe_poc/studio.py:negotiation_graph",
+    "mini_swe_dual": "./src/langgraph_mini_swe_poc/studio.py:dual_swe_graph",
+    "mini_swe_loop": "./src/langgraph_mini_swe_poc/studio.py:loop_graph"
+  },
+  "env": ".env"
+}
