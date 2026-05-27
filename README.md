@@ -1,17 +1,78 @@
 # LangGraph + mini-SWE-agent + LiteLLM PoC
 
-This is a small local proof of concept:
+This repository is a lightweight proof-of-concept for exploring orchestration patterns that combine LangGraph with a small "mini-SWE" agent harness and LiteLLM as an LLM gateway. The goals are practical experimentation and fast iteration: run small end-to-end tasks, inspect the LangGraph state and trajectories, and iterate on agent behaviors quickly.
 
-```text
-LangGraph coordinator
-  -> prepare task
-  -> run mini-SWE-agent worker in Docker
-  -> review/collect result
+Two Streamlit-based debug UIs are included for rapid interactive testing: `agentchat_streamlit` and `litellmchat_streamlit`.
 
-mini-SWE-agent
-  -> LiteLLM model
-  -> Docker sandbox
+Highlights:
+
+- Purpose: experiment with orchestration architectures (single-agent, multi-agent, negotiation, coordinator loop).
+- Fast feedback: CLI commands save full LangGraph trajectories and state JSON so you can inspect and reproduce runs.
+- Reproducibility: example tasks and a shared output directory are included so agent outputs and logs can be preserved.
+
+Quick notes (common confusions):
+
+- Copy `.env.example` to `.env` and update any secrets or endpoint URLs before running Studio or calling remote LLMs.
+- Trajectories and other runtime artifacts are saved under `trajectories/` by default — these are treated as ephemeral and are ignored by the repo via `.gitignore`.
+- Demo agent code, tests, and logs used for the coordinator loop live under `runs/shared/`.
+
+Quickstart
+----------
+
+Follow these minimal steps to run the project locally and exercise the demo flows.
+
+1) Create and activate a virtual environment, install the package, and copy the example env:
+
+```bash
+uv sync
+cp .env.example .env
 ```
+
+2) Run a smoke test (no LLM, fast):
+
+```bash
+uv run langgraph-mini-swe --mock "Create a hello.py script"
+```
+
+3) Start LangGraph Studio locally (optional):
+
+```bash
+uv run langgraph dev --no-browser --no-reload
+# then open the printed Studio URL in your browser
+```
+
+4) Run the coordinator loop (multi-agent demo):
+
+```bash
+export OPENAI_API_KEY="..."
+uv run langgraph-mini-swe \
+  --mode loop \
+  --rounds 3 \
+  --agents agent_a,agent_b,agent_c \
+  --runtime-input 10 \
+  --model openai/gpt-4.1 \
+  --output trajectories/loop-openai-fib.traj.json \
+  --image python:3.11 \
+  "Implement Fibonacci with isolated agents"
+```
+
+Notes:
+- If you rely on a local LiteLLM endpoint, set `LITELLM_API_BASE` in `.env` before running.
+- If you want agent outputs on the host filesystem, add `--shared-dir ./runs/shared --shared-mount /workspace/shared` to the run command.
+
+Modes
+-----
+
+This project supports several runtime `--mode` options. Use the mode that best matches the behavior you want to explore:
+
+- `single` (default): run the mini-SWE worker alone on the task. Use this for simple end-to-end checks and quick prototyping when you only need one implementer.
+- `multi`: add a Planner before the worker and a Reviewer after the worker. Use this to split planning from execution and to observe how a separate reviewer evaluates results.
+- `negotiate`: run a Planner → Plan Reviewer → Revise loop before the worker executes. Use this when you want the planner and reviewer to iterate on a plan until it meets criteria (useful for complex tasks where a plan needs refinement).
+- `dual-swe`: run two SWE workers in sequence (implementer → verifier) in separate sandboxes. Use this for stronger artifact handoff guarantees where one agent implements and another independently verifies the result.
+- `loop`: coordinator loop mode that runs multiple *isolated* agents (for example, `agent_a`, `agent_b`, `agent_c`) in parallel each round and repeats for N rounds. Use `loop` to compare different implementations, collect trajectories for analysis, or run competitions between agent strategies. Add `--shared-dir`/`--shared-mount` to preserve agent outputs on the host.
+
+
+
 
 ## Install
 
@@ -123,6 +184,27 @@ flowchart TD
     Reviewer --> Review[review_result]
     Review --> End([END])
 ```
+
+  Loop / Coordinator graph:
+
+  ```mermaid
+  flowchart TD
+    Start([START]) --> Coordinator[coordinator_loop]
+    Coordinator --> Agents{run_agents_in_parallel}
+    Agents --> A[agent_a]
+    Agents --> B[agent_b]
+    Agents --> C[agent_c]
+    A --> CollectA[collect_result_a]
+    B --> CollectB[collect_result_b]
+    C --> CollectC[collect_result_c]
+    CollectA --> Merge[merge_round_results]
+    CollectB --> Merge
+    CollectC --> Merge
+    Merge --> Review[review_round]
+    Review --> Decide{continue_rounds?}
+    Decide -- yes --> Start
+    Decide -- no --> End([END])
+  ```
 
 ## Run LangGraph Studio
 
