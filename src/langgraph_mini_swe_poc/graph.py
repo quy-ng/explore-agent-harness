@@ -45,6 +45,7 @@ class PocState(TypedDict, total=False):
     round_limit: int
     agent_ids: list[str]
     runtime_input: str
+    expected_value: str
     agents: dict[str, Any]
     coordinator_tasks: dict[str, str]
     agent_results: dict[str, Any]
@@ -94,12 +95,50 @@ def normalize_input(state: PocState) -> PocState:
         "round": state.get("round", 1),
         "round_limit": state.get("round_limit", 3),
         "agent_ids": state.get("agent_ids", ["agent_a", "agent_b", "agent_c"]),
-        "runtime_input": str(state.get("runtime_input", "10")),
+        "runtime_input": str(state.get("runtime_input", "12")),
+        "expected_value": str(state.get("expected_value", "144")),
         "agents": state.get("agents", {}),
     }
 
 
-def _default_agent_task(round_index: int, agent_id: str, runtime_input: str) -> str:
+def _test_run_cmd(agent_id: str) -> str:
+    """Return the canonical command to run an agent's test file.
+
+    The ``run_tests`` executable is injected into ``/usr/local/bin`` inside the
+    container by ``_docker_args`` so the agent only needs to call it by name.
+    It handles ``cd`` into the shared directory itself, ensuring relative imports
+    (e.g. ``from fib_agent_a import fib``) always resolve correctly — even if the
+    agent forgets to change directory first.
+    """
+    return f"run_tests {agent_id}"
+
+
+_RUN_TESTS_SCRIPT = """\
+#!/bin/sh
+# Usage: run_tests <agent_id>
+# Canonical test runner injected by the harness.
+# - cd into the shared directory so relative imports (from fib_agent_X import ...) resolve.
+# - Installs pytest if absent (python:3.x images ship stdlib only).
+# - set -o pipefail ensures a test failure propagates through the tee pipeline.
+set -eo pipefail
+AGENT_ID="${1:?Usage: run_tests <agent_id>}"
+SHARED="${SHARED_MOUNT:-/workspace/shared}"
+LOG="$SHARED/test_$AGENT_ID.log"
+cd "$SHARED"
+python3 -m pytest --version >/dev/null 2>&1 || python3 -m pip install pytest -q --disable-pip-version-check
+python3 -m pytest "test_fib_$AGENT_ID.py" -v 2>&1 | tee "$LOG"
+"""
+
+
+def _default_agent_task(
+    round_index: int,
+    agent_id: str,
+    runtime_input: str,
+    expected_value: str,
+    shared_mount: str,
+) -> str:
+    test_cmd = _test_run_cmd(agent_id)
+    fib_script = f"{shared_mount}/fib_{agent_id}.py"
     if round_index == 1:
         approach = {
             "agent_a": "recursive",
@@ -112,28 +151,41 @@ def _default_agent_task(round_index: int, agent_id: str, runtime_input: str) -> 
             f"Approach: {approach}.\n\n"
             "Expected outputs:\n"
             f"- fib_{agent_id}.py\n"
-            f"- test_fib_{agent_id}.py\n"
-            f"- run_{agent_id}.log\n"
-            f"- test_{agent_id}.log"
         )
     if round_index == 2:
         return (
-            "Add tests for your Fibonacci implementation. Use a separate test file such as "
-            f"`test_fib_{agent_id}.py`. Run the tests and report the output.\n\n"
+            f"Add tests for your Fibonacci implementation at {fib_script}. "
+            f"Use a separate test file such as `test_fib_{agent_id}.py`.\n\n"
+            f"Run tests with exactly: `{test_cmd} > test_{agent_id}.log 2>&1`\n\n"
             "Expected outputs:\n"
             f"- test_fib_{agent_id}.py\n"
             f"- test_{agent_id}.log"
         )
     if round_index == 3:
+        step_a = "\n".join([
+            # Condition 1: output must match expected value
+            f'result=$(python3 {fib_script} {runtime_input}) && echo "$result" > {shared_mount}/run_{agent_id}.log &&',
+            f'[ "$result" = "{expected_value}" ] || {{ echo "CONDITION 1 FAILED: fib({runtime_input})=$result, expected {expected_value}"; exit 1; }} &&',
+            f'echo "CONDITION 1 PASSED: fib({runtime_input})={expected_value}" &&',
+            # Condition 2: all unit tests must pass
+            f"{test_cmd} &&",
+            'echo "CONDITION 2 PASSED: all tests passed" &&',
+            # Print evidence
+            f"cat {fib_script} &&",
+            f"cat {shared_mount}/run_{agent_id}.log &&",
+            f"cat {shared_mount}/test_{agent_id}.log",
+        ])
         return (
-            "Final round: run your Fibonacci implementation and unit tests, then print the code and logs. "
-            f"Use input {runtime_input} for the run. Use a single chained command (with &&) that: "
-            "(1) runs the program and captures output, (2) runs tests and captures output, "
-            "(3) prints the code file and both outputs, then (4) ends with "
-            "`echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`.\n\n"
+            "Final round: copy and run the exact commands below — do NOT change any values.\n"
+            "Both conditions must pass before you may submit:\n"
+            f"  • Condition 1: fib({runtime_input}) must equal {expected_value}\n"
+            "  • Condition 2: all unit tests must pass\n\n"
+            f"Step A (copy exactly):\n```\n{step_a}\n```\n\n"
+            "Step B — only after Step A exits 0 with both conditions passing, run this single command alone:\n"
+            "```\necho COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n```\n\n"
             "Expected outputs:\n"
-            f"- run_{agent_id}.log\n"
-            f"- test_{agent_id}.log"
+            f"- {shared_mount}/run_{agent_id}.log\n"
+            f"- {shared_mount}/test_{agent_id}.log"
         )
     return (
         "Repeat a validation run on your implementation. Use a fresh input, show the command, "
@@ -143,10 +195,11 @@ def _default_agent_task(round_index: int, agent_id: str, runtime_input: str) -> 
 
 def coordinator_round(state: PocState) -> PocState:
     round_index = int(state.get("round", 1))
-    runtime_input = str(state.get("runtime_input", "10"))
-    narrative = str(state.get("task", "")).strip()
+    runtime_input = str(state.get("runtime_input"))
+    expected_value = str(state.get("expected_value"))
+    narrative = str(state.get("task")).strip()
     shared_dir = str(state.get("shared_dir", "")).strip()
-    shared_mount = str(state.get("shared_mount", "/workspace/shared")).strip()
+    shared_mount = str(state.get("shared_mount")).strip()
     shared_note = ""
     if shared_dir:
         shared_note = (
@@ -155,7 +208,7 @@ def coordinator_round(state: PocState) -> PocState:
         )
     tasks: dict[str, str] = {}
     for agent_id in state.get("agent_ids", []):
-        base_task = _default_agent_task(round_index, agent_id, runtime_input)
+        base_task = _default_agent_task(round_index, agent_id, runtime_input, expected_value, shared_mount)
         if narrative:
             base_task = f"{base_task}\n\nCoordinator narrative:\n{narrative}"
         if shared_note:
@@ -380,7 +433,18 @@ def _docker_args(state: PocState) -> list[str]:
         return []
     host_dir = Path(shared_dir).expanduser().resolve()
     host_dir.mkdir(parents=True, exist_ok=True)
-    return ["-v", f"{host_dir}:{shared_mount}"]
+
+    # Write the canonical test-runner script to the shared dir on the host.
+    # It is mounted read-only into /usr/local/bin so all agents find it on $PATH.
+    script_path = host_dir / "run_tests"
+    script_path.write_text(_RUN_TESTS_SCRIPT)
+    script_path.chmod(0o755)
+
+    return [
+        "-v", f"{host_dir}:{shared_mount}",
+        "-v", f"{script_path}:/usr/local/bin/run_tests:ro",
+        "-e", f"SHARED_MOUNT={shared_mount}",
+    ]
 
 
 def run_worker(state: PocState) -> PocState:

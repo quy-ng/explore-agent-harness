@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 import platform
 from typing import Any
+import warnings
 
 import yaml
 
@@ -89,7 +90,12 @@ def run_swe_worker(
     try:
         result = agent.run(task, **system_info)
     finally:
-        asyncio.run(environment.deployment.stop())
+        # Suppress the spurious ResourceWarning emitted by swerex's AbstractDeployment.__del__
+        # when it tries to stop on an already-closed event loop.  We stop the deployment
+        # explicitly here, so the __del__ fallback is a no-op and the warning is noise.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", ResourceWarning)
+            asyncio.run(environment.deployment.stop())
 
     return {
         "exit_status": result.get("exit_status", ""),
