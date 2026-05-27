@@ -77,9 +77,7 @@ This project supports several runtime `--mode` options. Use the mode that best m
 ## Install
 
 ```bash
-uv venv
-source .venv/bin/activate
-uv pip install -e .
+uv sync
 cp .env.example .env
 ```
 
